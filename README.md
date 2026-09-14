@@ -1,8 +1,9 @@
 # LightStore
 
 An overhead-camera packing MVP built on the original FastAPI + browser WebSocket
-prototype. YOLO11n detects food, ByteTrack gives each visible product a persistent
-ID, and a small state machine counts transfers into a fixed bag zone. Annotated
+prototype. YOLOv8n pretrained on Open Images V7 detects 65 selected food and
+packaging classes, ByteTrack gives each visible product a persistent ID, and a
+small state machine counts transfers into a fixed bag zone. Annotated
 JPEG frames and counters are returned over the existing `/ws/detect` connection.
 
 ## Setup and launch
@@ -18,10 +19,14 @@ uvicorn app:app --reload --host 127.0.0.1 --port 8000
 
 On Windows, use WSL and the same commands above: the original frozen requirements
 include `uvloop`, which is Unix-only.
-The first launch downloads the official `yolo11n.pt` weights if absent. Internet
-access is needed for installation and that initial download; model weights are
-ignored by Git. Subsequent inference runs locally. ByteTrack's `lap` dependency
-is installed explicitly with the other requirements.
+The first launch uses `huggingface_hub` to download `yolov8n-oiv7.pt` (~7.2 MB)
+from the community HF repository
+[Blue2020Panda/YOLOv8nOIV7](https://huggingface.co/Blue2020Panda/YOLOv8nOIV7), pinned
+to revision `6085b73632b3e7e56ab64d60b1623d38679bf120`. The checkpoint is saved
+beside `app.py` and reused offline on subsequent starts. Internet access is needed
+for installation and the initial download; no HF token or dataset download is
+required. Model weights and download metadata are ignored by Git. ByteTrack's
+`lap` dependency is installed explicitly with the other requirements.
 
 Open <http://127.0.0.1:8000>, allow camera access, and click **Start camera**.
 Browsers require localhost or HTTPS for camera capture. Point the camera down at
@@ -51,8 +56,12 @@ All tuning lives in `config.py`:
 | `MIN_INSIDE_FRAMES` | `2` | Consecutive observed inside frames needed to confirm packing |
 | `TRACK_TTL_FRAMES` | `60` | Remove geometry after more than this many unseen processed frames |
 | `CONF_THRESHOLD` | `0.35` | YOLO detection confidence |
+| `AGNOSTIC_NMS` | `True` | Suppress overlapping detections across different classes |
+| `NMS_IOU_THRESHOLD` | `0.70` | Box IoU above which the lower-confidence detection is suppressed |
 | `PACKED_BANNER_FRAMES` | `30` | How long the latest event stays on the video |
-| `MODEL_PATH` | `yolo11n.pt` | Existing YOLO11n model |
+| `MAX_PACKED_OVERLAY_ROWS` | `8` | Maximum class rows on the video; the sidebar keeps all counts |
+| `MODEL_PATH` | `yolov8n-oiv7.pt` | Open Images V7 checkpoint, relative to `app.py` or absolute |
+| `MODEL_HF_REPO`, `MODEL_HF_REVISION` | See `config.py` | Pinned source used when the local checkpoint is absent |
 | `TRACKER_CONFIG` | `bytetrack.yaml` | Ultralytics ByteTrack configuration |
 
 Coordinates start at the top-left corner: x increases to the right, y downward.
@@ -61,22 +70,40 @@ For the default ROI, the bag zone is 200 pixels wide and 240 pixels tall. Keep
 apply after resizing, independently of camera capture resolution. Adjust the
 rectangle to match the real bag opening. Changing settings requires a reload.
 
-`FOOD_CLASSES` contains exactly these COCO labels:
+`FOOD_CLASSES` is built from `FOOD_CLASS_GROUPS` and includes **all 65 requested
+classes**, including packaging. Names are case-sensitive and match the checkpoint:
 
-```python
-{
-    "banana", "apple", "sandwich", "orange", "broccoli",
-    "carrot", "hot dog", "pizza", "donut", "cake",
-}
-```
+| Group | Enabled Open Images V7 labels |
+| --- | --- |
+| Fruit and berries (16) | Apple, Banana, Orange, Lemon, Pear, Peach, Grape, Grapefruit, Mango, Pineapple, Pomegranate, Strawberry, Watermelon, Cantaloupe, Coconut, Common fig |
+| Vegetables and mushrooms (13) | Tomato, Cucumber, Potato, Carrot, Bell pepper, Broccoli, Cabbage, Pumpkin, Radish, Zucchini, Garden Asparagus, Artichoke, Mushroom |
+| Bread and bakery (10) | Bread, Croissant, Bagel, Muffin, Cookie, Pretzel, Waffle, Pancake, Cake, Tart |
+| Prepared food (10) | Pizza, Sandwich, Hamburger, Hot dog, Sushi, Pasta, Salad, Burrito, Taco, French fries |
+| Dairy and eggs (5) | Milk, Cheese, Cream, Egg (Food), Dairy Product |
+| Sweets and drinks (6) | Candy, Ice cream, Popcorn, Juice, Tea, Coffee |
+| Packaging (5) | Bottle, Box, Tin can, Plastic bag, Container |
 
-Edit that set to change the allowed classes. Class IDs are resolved from the
-model's names rather than hardcoded COCO IDs. Filtering happens both at inference
-and before tracking-state updates/drawing; people, furniture, phones and other
-classes are ignored. Detection boxes without an assigned track ID are withheld
-until ByteTrack confirms them. `visible_counts` counts the displayed tracked
-food objects. A track keeps its first observed food class to reduce label flicker.
-For a future custom model, update `MODEL_PATH` and `FOOD_CLASSES` together.
+Edit the groups to change the allowed classes. Class IDs are resolved from the
+model's names rather than hardcoded dataset IDs. Startup rejects a checkpoint
+missing any enabled class, so an accidental switch back to COCO cannot silently
+disable products. See the [full upstream class list](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/open-images-v7.yaml).
+
+Filtering happens both at inference and before tracking-state updates/drawing;
+people, furniture, phones and all other unselected classes are ignored. Detection
+boxes without a track ID are withheld until ByteTrack confirms them.
+`visible_counts` counts displayed tracked objects, including packaging. A track
+keeps its first observed enabled class to reduce label flicker. Labels retain
+their Open Images capitalization in the video and JSON responses.
+
+Open Images includes overlapping meanings such as `Milk`, `Dairy Product` and
+`Bottle`. Class-agnostic NMS suppresses highly overlapping boxes before ByteTrack,
+keeping the highest-confidence label to reduce duplicate tracks for one object.
+This is a heuristic: nearby overlapping products may be suppressed, and a larger
+package enclosing a smaller visible product can still receive a separate ID.
+Packaging follows exactly the same outside → inside packing rule as food.
+
+For a custom checkpoint, place it locally and update `MODEL_PATH` and the class
+groups together; update the HF source as well if it should be downloaded remotely.
 
 ## Packing state machine
 
@@ -112,15 +139,15 @@ Example WebSocket response (image omitted):
 ```json
 {
   "image": "<base64 JPEG>",
-  "visible_counts": {"apple": 1},
-  "counts": {"apple": 1},
-  "packed_counts": {"apple": 2, "banana": 1},
+  "visible_counts": {"Apple": 1},
+  "counts": {"Apple": 1},
+  "packed_counts": {"Apple": 2, "Banana": 1},
   "packed_total": 3,
   "event_count": 3,
   "session_version": 0,
   "last_event": {
     "track_id": 7,
-    "class_name": "apple",
+    "class_name": "Apple",
     "event": "packed",
     "timestamp": "2026-09-14T19:00:00+00:00",
     "frame_number": 42
@@ -163,16 +190,16 @@ node --check static/app.js
 
 For a real-camera acceptance check, move one apple outside → inside, hold it for
 several frames, and verify one event. Move it out and back with the same displayed
-ID and verify no duplicate. Repeat with two products, test a non-food object,
-and test Reset. Automated geometry tests cannot establish real-world detection
+ID and verify no duplicate. Repeat with two products, a bottle or box, an excluded
+object such as a phone, and Reset. Automated geometry tests cannot establish real-world detection
 or tracking accuracy.
 
 ## Files
 
-- `app.py`: FastAPI lifecycle, existing WebSocket route, session/reset endpoints.
-- `config.py`: food labels, ROI and thresholds.
+- `app.py`: HF checkpoint loading, FastAPI lifecycle, WebSocket and session/reset endpoints.
+- `config.py`: grouped product/packaging labels, checkpoint source, ROI and thresholds.
 - `tracking.py`: dependency-free geometry, per-ID state, counts and event log.
-- `vision.py`: YOLO tracking adapter, food filtering, annotation and session lock.
+- `vision.py`: YOLO tracking adapter, class validation/filtering, NMS, annotation and session lock.
 - `static/index.html`, `static/app.js`: original camera UI, capture loop, packed
   counters and reset controls.
 - `tests/`: geometry, event, API and browser-controller regression tests.
@@ -182,7 +209,10 @@ or tracking accuracy.
 - An ROI crossing is a proxy for packing; this does not verify that an item is
   actually inside a physical bag. Brief passes through the ROI can count once
   they meet the configured confirmation length.
-- COCO has ten generic food labels here, not store SKUs. Lighting, occlusion,
+- The 65 enabled Open Images classes are generic categories, not store SKUs.
+  Brand, size and flavour are not distinguished. A food label does not guarantee
+  recognition through a closed package; packaging labels describe its shape,
+  not its contents. Lighting, occlusion,
   fast motion and overlapping products can cause missed detections or ID swaps.
   A physical product that acquires a new ID can be counted again after a new
   outside → inside transition; exact-once applies to a track ID within a session.

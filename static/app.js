@@ -106,7 +106,7 @@ async function start() {
     connection.onopen = () => {
       if (socket !== connection) return;
       running = true;
-      setStatus("Connected. Move food into the yellow bag zone.");
+      setStatus("Connected. Move products into the yellow bag zone.");
       sendNextFrame();
     };
     connection.onmessage = (event) => {
@@ -120,7 +120,7 @@ async function start() {
         }
         if (renderSession(response)) {
           showImage(response.image);
-          renderCounts(response.visible_counts || {}, totalCount, classCounts, "No tracked food visible");
+          renderCounts(response.visible_counts || {}, totalCount, classCounts, "No tracked products visible");
         }
         sendNextFrame();
       } catch (error) {

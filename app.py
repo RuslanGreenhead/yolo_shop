@@ -7,7 +7,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import MODEL_PATH
+from config import MODEL_HF_REPO, MODEL_HF_REVISION, MODEL_PATH
 from vision import FrameProcessor
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,16 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 def load_model():
     from ultralytics import YOLO
 
-    return YOLO(MODEL_PATH)
+    # Reuse project-local weights offline; download the pinned HF file on first run.
+    model_path = Path(__file__).resolve().parent / MODEL_PATH
+    if not model_path.is_file():
+        from huggingface_hub import hf_hub_download
+
+        model_path = hf_hub_download(
+            repo_id=MODEL_HF_REPO, filename=model_path.name,
+            revision=MODEL_HF_REVISION, local_dir=model_path.parent, token=False,
+        )
+    return YOLO(str(model_path))
 
 
 @asynccontextmanager

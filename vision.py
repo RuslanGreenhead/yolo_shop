@@ -8,8 +8,9 @@ import cv2
 import numpy as np
 
 from config import (
-    CONF_THRESHOLD, FOOD_CLASSES, FRAME_HEIGHT, FRAME_WIDTH,
-    MAX_FRAME_BYTES, PACKED_BANNER_FRAMES, TRACKER_CONFIG,
+    AGNOSTIC_NMS, CONF_THRESHOLD, FOOD_CLASSES, FRAME_HEIGHT, FRAME_WIDTH,
+    MAX_FRAME_BYTES, MAX_PACKED_OVERLAY_ROWS, NMS_IOU_THRESHOLD,
+    PACKED_BANNER_FRAMES, TRACKER_CONFIG,
 )
 from tracking import Detection, PackingTracker
 
@@ -57,10 +58,13 @@ def annotate_frame(frame, detections, tracker):
     draw_label(frame, "BAG / PACKING ZONE", (x1, max(18, y1 - 12)), (0, 220, 255))
 
     rows = [f"Packed: {sum(tracker.packed_counts.values())}"]
-    rows.extend(f"{name}: {count}" for name, count in sorted(tracker.packed_counts.items()))
+    counts = sorted(tracker.packed_counts.items())
+    rows.extend(f"{name}: {count}" for name, count in counts[:MAX_PACKED_OVERLAY_ROWS])
+    if len(counts) > MAX_PACKED_OVERLAY_ROWS:
+        rows.append(f"+{len(counts) - MAX_PACKED_OVERLAY_ROWS} more in sidebar")
     top = FRAME_HEIGHT - 16 - 22 * len(rows)
     overlay = frame.copy()
-    cv2.rectangle(overlay, (8, top - 16), (190, FRAME_HEIGHT - 8), (15, 20, 25), -1)
+    cv2.rectangle(overlay, (8, top - 16), (214, FRAME_HEIGHT - 8), (15, 20, 25), -1)
     cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
     for index, text in enumerate(rows):
         draw_label(frame, text, (16, top + index * 22), (150, 245, 160))
@@ -81,6 +85,13 @@ class FrameProcessor:
         self.tracker = PackingTracker()
         self.lock = Lock()
         self.session_version = 0
+        missing_classes = FOOD_CLASSES - set(model.names.values())
+        if missing_classes:
+            raise ValueError(
+                "The model is missing configured FOOD_CLASSES: "
+                + ", ".join(sorted(missing_classes))
+                + ". Use the Open Images V7 weights or update FOOD_CLASSES."
+            )
         self.food_class_ids = [
             class_id for class_id, name in model.names.items() if name in FOOD_CLASSES
         ]
@@ -115,6 +126,7 @@ class FrameProcessor:
                 frame, persist=True, tracker=TRACKER_CONFIG,
                 classes=self.food_class_ids, conf=CONF_THRESHOLD,
                 imgsz=FRAME_WIDTH, verbose=False,
+                agnostic_nms=AGNOSTIC_NMS, iou=NMS_IOU_THRESHOLD,
             )[0]
             detections = extract_food_detections(result)
             events = self.tracker.update(detections)
