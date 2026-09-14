@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>YOLO11 Live Detection</title>
+  <title>LightStore — Packing monitor</title>
 
   <style>
     :root {
@@ -50,6 +50,7 @@
 
     .controls {
       display: flex;
+      flex-wrap: wrap;
       gap: 10px;
     }
 
@@ -85,7 +86,7 @@
       position: relative;
       width: 100%;
       overflow: hidden;
-      aspect-ratio: 16 / 9;
+      aspect-ratio: 4 / 3;
       background: #000;
       border: 1px solid #262b36;
       border-radius: 14px;
@@ -112,12 +113,12 @@
       display: none;
     }
 
+    .viewer:not(.has-image) #result {
+      visibility: hidden;
+    }
+
     #counter {
-      position: absolute;
-      right: 18px;
-      bottom: 18px;
-      z-index: 2;
-      width: min(300px, calc(100% - 36px));
+      width: 100%;
       padding: 13px 15px;
       border: 1px solid rgba(255, 255, 255, 0.18);
       border-radius: 11px;
@@ -154,7 +155,7 @@
       line-height: 1;
     }
 
-    #classCounts {
+    #classCounts, #packedCounts {
       display: grid;
       gap: 4px;
       max-height: 160px;
@@ -179,6 +180,27 @@
       font-size: 0.82rem;
     }
 
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .stats-section + .stats-section {
+      border-top: 1px solid #303745;
+      margin-top: 20px;
+      padding-top: 20px;
+    }
+
+    .hint { color: #aeb6c7; line-height: 1.5; font-size: 0.9rem; }
+    #lastEvent { color: #86efac; line-height: 1.5; }
+    #resetButton { background: #334155; }
+
+    @media (max-width: 850px) {
+      .workspace { grid-template-columns: 1fr; }
+    }
+
     /* Camera is needed for capture but is intentionally not shown. */
     #camera,
     #canvas {
@@ -191,14 +213,6 @@
         padding: 14px;
       }
 
-      .viewer {
-        aspect-ratio: 3 / 4;
-      }
-
-      #counter {
-        right: 10px;
-        bottom: 10px;
-      }
     }
   </style>
 </head>
@@ -207,24 +221,40 @@
   <main>
     <header>
       <div>
-        <h1>LightStore fucking fabulous YOLO-detector</h1>
+        <h1>LightStore · Packing monitor</h1>
         <p id="status">Click “Start camera” to begin.</p>
       </div>
 
       <div class="controls">
         <button id="startButton">Start camera</button>
         <button id="stopButton" disabled>Stop</button>
+        <button id="resetButton">Reset session</button>
       </div>
     </header>
 
-    <section id="viewer" class="viewer">
+    <p class="hint">Place products outside the yellow bag zone, then move them inside.
+      Hold each product in the zone until the green PACKED label appears.</p>
+
+    <div class="workspace">
+    <section id="viewer" class="viewer" aria-label="Camera stream">
       <img id="result" alt="Annotated YOLO11 camera stream">
 
       <div class="placeholder">
         Processed camera stream will appear here
       </div>
+    </section>
 
       <aside id="counter" aria-live="polite">
+        <div class="stats-section">
+          <div class="counter-title">Packed this session</div>
+          <div class="counter-total">
+            <span>Total items</span>
+            <strong id="packedTotal">0</strong>
+          </div>
+          <div id="packedCounts"><div class="empty-count">Nothing packed yet</div></div>
+          <p id="lastEvent">Waiting for a transfer</p>
+        </div>
+        <div class="stats-section">
         <div class="counter-title">Detected now</div>
 
         <div class="counter-total">
@@ -235,253 +265,16 @@
         <div id="classCounts">
           <div class="empty-count">No detections yet</div>
         </div>
+        </div>
       </aside>
-    </section>
+    </div>
+    <p class="hint">Stop pauses capture and preserves the session. Reset clears the packed list.
+      One camera can be connected at a time.</p>
 
     <video id="camera" autoplay playsinline muted></video>
     <canvas id="canvas"></canvas>
   </main>
 
-  <script>
-    const camera = document.getElementById("camera");
-    const canvas = document.getElementById("canvas");
-    const viewer = document.getElementById("viewer");
-    const resultImage = document.getElementById("result");
-
-    const status = document.getElementById("status");
-    const startButton = document.getElementById("startButton");
-    const stopButton = document.getElementById("stopButton");
-
-    const totalCount = document.getElementById("totalCount");
-    const classCounts = document.getElementById("classCounts");
-
-    let socket = null;
-    let stream = null;
-    let running = false;
-    let frameInFlight = false;
-    let resultUrl = null;
-
-    function setStatus(message) {
-      status.textContent = message;
-    }
-
-    function getWebSocketUrl() {
-      const protocol = location.protocol === "https:" ? "wss" : "ws";
-      return `${protocol}://${location.host}/ws/detect`;
-    }
-
-    function resetCounter() {
-      totalCount.textContent = "0";
-      classCounts.innerHTML =
-        '<div class="empty-count">No detections yet</div>';
-    }
-
-    function renderCounts(counts) {
-      const entries = Object.entries(counts)
-        .sort(([nameA], [nameB]) => nameA.localeCompare(nameB));
-
-      const total = entries.reduce(
-        (sum, [, count]) => sum + count,
-        0
-      );
-
-      totalCount.textContent = total;
-
-      if (entries.length === 0) {
-        classCounts.innerHTML =
-          '<div class="empty-count">No objects detected</div>';
-        return;
-      }
-
-      classCounts.innerHTML = "";
-
-      for (const [label, count] of entries) {
-        const row = document.createElement("div");
-        row.className = "class-row";
-
-        const name = document.createElement("span");
-        name.textContent = label;
-
-        const value = document.createElement("span");
-        value.className = "count";
-        value.textContent = count;
-
-        row.append(name, value);
-        classCounts.appendChild(row);
-      }
-    }
-
-    function base64ToBlob(base64Text, mimeType) {
-      const binary = atob(base64Text);
-      const bytes = new Uint8Array(binary.length);
-
-      for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-      }
-
-      return new Blob([bytes], { type: mimeType });
-    }
-
-    async function start() {
-      try {
-        resetCounter();
-        setStatus("Requesting camera permission...");
-
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-            facingMode: "environment"
-          },
-          audio: false
-        });
-
-        camera.srcObject = stream;
-        await camera.play();
-
-        setStatus("Connecting to detection server...");
-
-        socket = new WebSocket(getWebSocketUrl());
-
-        socket.onopen = () => {
-          running = true;
-          startButton.disabled = true;
-          stopButton.disabled = false;
-          setStatus("Connected. Detecting objects...");
-          sendNextFrame();
-        };
-
-        socket.onmessage = (event) => {
-          frameInFlight = false;
-
-          try {
-            // FastAPI send_json() sends a text message by default.
-            const response = JSON.parse(event.data);
-
-            if (response.error) {
-              setStatus(`Server error: ${response.error}`);
-              return;
-            }
-
-            if (resultUrl) {
-              URL.revokeObjectURL(resultUrl);
-            }
-
-            const imageBlob = base64ToBlob(
-              response.image,
-              "image/jpeg"
-            );
-
-            resultUrl = URL.createObjectURL(imageBlob);
-            resultImage.src = resultUrl;
-            viewer.classList.add("has-image");
-
-            renderCounts(response.counts || {});
-
-            if (running) {
-              sendNextFrame();
-            }
-          } catch (error) {
-            console.error("Cannot process server response:", error);
-            setStatus(`Cannot process detection result: ${error.message}`);
-          }
-        };
-
-        socket.onerror = () => {
-          setStatus("WebSocket error. See the server terminal and browser console.");
-        };
-
-        socket.onclose = () => {
-          frameInFlight = false;
-
-          if (running) {
-            running = false;
-            startButton.disabled = false;
-            stopButton.disabled = true;
-            setStatus("Server connection closed.");
-          }
-        };
-      } catch (error) {
-        console.error(error);
-        setStatus(`Cannot access camera: ${error.message}`);
-        stop();
-      }
-    }
-
-    function sendNextFrame() {
-      if (
-        !running ||
-        frameInFlight ||
-        !socket ||
-        socket.readyState !== WebSocket.OPEN ||
-        camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
-      ) {
-        return;
-      }
-
-      const width = 640;
-      const height = 480;
-
-      canvas.width = width;
-      canvas.height = height;
-
-      const context = canvas.getContext("2d", {
-        alpha: false,
-        desynchronized: true
-      });
-
-      context.drawImage(camera, 0, 0, width, height);
-
-      frameInFlight = true;
-
-      canvas.toBlob(
-        (blob) => {
-          if (!blob || !socket || socket.readyState !== WebSocket.OPEN) {
-            frameInFlight = false;
-            return;
-          }
-
-          socket.send(blob);
-        },
-        "image/jpeg",
-        0.78
-      );
-    }
-
-    function stop() {
-      running = false;
-      frameInFlight = false;
-
-      if (socket) {
-        socket.close();
-        socket = null;
-      }
-
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-        stream = null;
-      }
-
-      camera.srcObject = null;
-
-      if (resultUrl) {
-        URL.revokeObjectURL(resultUrl);
-        resultUrl = null;
-      }
-
-      resultImage.removeAttribute("src");
-      viewer.classList.remove("has-image");
-
-      startButton.disabled = false;
-      stopButton.disabled = true;
-
-      resetCounter();
-      setStatus("Stopped.");
-    }
-
-    startButton.addEventListener("click", start);
-    stopButton.addEventListener("click", stop);
-    window.addEventListener("beforeunload", stop);
-  </script>
+  <script src="/static/app.js" defer></script>
 </body>
 </html>

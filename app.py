@@ -1,95 +1,79 @@
 import asyncio
-import base64
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-import cv2
-import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from ultralytics import YOLO
 
-app = FastAPI()
+from config import MODEL_PATH
+from vision import FrameProcessor
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+logger = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-# Smallest YOLO11 detection model: a good default for live camera inference.
-model = YOLO("yolo11n.pt")
+
+def load_model():
+    from ultralytics import YOLO
+
+    return YOLO(MODEL_PATH)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Loading at startup keeps imports and API tests independent of model files.
+    app.state.processor = await asyncio.to_thread(lambda: FrameProcessor(load_model()))
+    app.state.active_camera = None
+    yield
+
+
+app = FastAPI(title="LightStore", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/")
 async def home():
-    return FileResponse("static/index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
-def detect_encode_and_count(image_bytes: bytes) -> dict:
-    image_array = np.frombuffer(image_bytes, dtype=np.uint8)
-    frame = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+@app.get("/api/session")
+def get_session():
+    return app.state.processor.snapshot()
 
-    if frame is None:
-        raise ValueError("Could not decode camera frame.")
 
-    # Keep processing resolution reasonable for real-time use.
-    frame = cv2.resize(frame, (640, 480))
-
-    result = model(
-        frame,
-        conf=0.35,
-        imgsz=640,
-        verbose=False
-    )[0]
-
-    annotated_frame = result.plot()
-    counts = {}
-
-    # result.boxes.cls contains the detected class IDs.
-    if result.boxes is not None and len(result.boxes) > 0:
-        class_ids = result.boxes.cls.int().cpu().tolist()
-
-        for class_id in class_ids:
-            class_name = result.names[class_id]
-            counts[class_name] = counts.get(class_name, 0) + 1
-
-    success, encoded_image = cv2.imencode(
-        ".jpg",
-        annotated_frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), 80]
-    )
-
-    if not success:
-        raise ValueError("Could not encode annotated frame.")
-
-    return {
-        "image": base64.b64encode(encoded_image.tobytes()).decode("ascii"),
-        "counts": counts
-    }
+@app.post("/api/reset")
+def reset_session():
+    return app.state.processor.reset()
 
 
 @app.websocket("/ws/detect")
 async def detect_websocket(websocket: WebSocket):
     await websocket.accept()
-    print("Browser connected.")
-
+    # A persistent YOLO tracker cannot mix frames from different cameras.
+    if app.state.active_camera is not None:
+        await websocket.send_json({"error": "Another camera is already connected. Stop it first."})
+        await websocket.close(code=1008)
+        return
+    app.state.active_camera = websocket
     try:
         while True:
             image_bytes = await websocket.receive_bytes()
-
-            response = await asyncio.to_thread(
-                detect_encode_and_count,
-                image_bytes
-            )
-
-            # Sent as a normal JSON TEXT WebSocket message.
+            try:
+                response = await asyncio.to_thread(app.state.processor.process, image_bytes)
+            except ValueError as error:
+                await websocket.send_json({"error": str(error)})
+                continue
             await websocket.send_json(response)
-
     except WebSocketDisconnect:
-        print("Browser disconnected.")
-
-    except Exception as error:
-        print(f"WebSocket error: {error}")
-
+        pass
+    except Exception:
+        logger.exception("Could not process camera stream")
         try:
-            await websocket.send_json({
-                "error": str(error)
-            })
-        except Exception:
+            await websocket.send_json({"error": "Camera processing failed. See the server log."})
+            await websocket.close(code=1011)
+        except (RuntimeError, WebSocketDisconnect):
             pass
+    finally:
+        if app.state.active_camera is websocket:
+            app.state.active_camera = None
