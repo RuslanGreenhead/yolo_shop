@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YOLO11 Live Detection</title>
+
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #0b0d12;
+      color: #f8fafc;
+      font-family: Arial, sans-serif;
+    }
+
+    main {
+      width: min(1280px, 96vw);
+      margin: 0 auto;
+      padding: 20px 0;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.2rem, 2vw, 1.8rem);
+    }
+
+    #status {
+      margin: 6px 0 0;
+      color: #aeb6c7;
+      font-size: 0.95rem;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+    }
+
+    button {
+      padding: 10px 15px;
+      border: 0;
+      border-radius: 9px;
+      background: #4f46e5;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button:hover:not(:disabled) {
+      background: #6366f1;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    #stopButton {
+      background: #b91c1c;
+    }
+
+    #stopButton:hover:not(:disabled) {
+      background: #dc2626;
+    }
+
+    .viewer {
+      position: relative;
+      width: 100%;
+      overflow: hidden;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border: 1px solid #262b36;
+      border-radius: 14px;
+    }
+
+    #result {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    .placeholder {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #8b95a7;
+      pointer-events: none;
+    }
+
+    .viewer.has-image .placeholder {
+      display: none;
+    }
+
+    #counter {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      z-index: 2;
+      width: min(300px, calc(100% - 36px));
+      padding: 13px 15px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 11px;
+      background: rgba(8, 11, 18, 0.84);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    }
+
+    .counter-title {
+      margin-bottom: 8px;
+      color: #dbeafe;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .counter-total {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .counter-total span {
+      color: #cbd5e1;
+      font-size: 0.85rem;
+    }
+
+    .counter-total strong {
+      color: #fff;
+      font-size: 1.7rem;
+      line-height: 1;
+    }
+
+    #classCounts {
+      display: grid;
+      gap: 4px;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+
+    .class-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: #d9e2f0;
+      font-size: 0.86rem;
+    }
+
+    .class-row .count {
+      color: #93c5fd;
+      font-weight: 800;
+    }
+
+    .empty-count {
+      color: #aab3c2;
+      font-size: 0.82rem;
+    }
+
+    /* Camera is needed for capture but is intentionally not shown. */
+    #camera,
+    #canvas {
+      display: none;
+    }
+
+    @media (max-width: 560px) {
+      main {
+        width: 100%;
+        padding: 14px;
+      }
+
+      .viewer {
+        aspect-ratio: 3 / 4;
+      }
+
+      #counter {
+        right: 10px;
+        bottom: 10px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>LightStore fucking fabulous YOLO-detector</h1>
+        <p id="status">Click “Start camera” to begin.</p>
+      </div>
+
+      <div class="controls">
+        <button id="startButton">Start camera</button>
+        <button id="stopButton" disabled>Stop</button>
+      </div>
+    </header>
+
+    <section id="viewer" class="viewer">
+      <img id="result" alt="Annotated YOLO11 camera stream">
+
+      <div class="placeholder">
+        Processed camera stream will appear here
+      </div>
+
+      <aside id="counter" aria-live="polite">
+        <div class="counter-title">Detected now</div>
+
+        <div class="counter-total">
+          <span>Total items</span>
+          <strong id="totalCount">0</strong>
+        </div>
+
+        <div id="classCounts">
+          <div class="empty-count">No detections yet</div>
+        </div>
+      </aside>
+    </section>
+
+    <video id="camera" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </main>
+
+  <script>
+    const camera = document.getElementById("camera");
+    const canvas = document.getElementById("canvas");
+    const viewer = document.getElementById("viewer");
+    const resultImage = document.getElementById("result");
+
+    const status = document.getElementById("status");
+    const startButton = document.getElementById("startButton");
+    const stopButton = document.getElementById("stopButton");
+
+    const totalCount = document.getElementById("totalCount");
+    const classCounts = document.getElementById("classCounts");
+
+    let socket = null;
+    let stream = null;
+    let running = false;
+    let frameInFlight = false;
+    let resultUrl = null;
+
+    function setStatus(message) {
+      status.textContent = message;
+    }
+
+    function getWebSocketUrl() {
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      return `${protocol}://${location.host}/ws/detect`;
+    }
+
+    function resetCounter() {
+      totalCount.textContent = "0";
+      classCounts.innerHTML =
+        '<div class="empty-count">No detections yet</div>';
+    }
+
+    function renderCounts(counts) {
+      const entries = Object.entries(counts)
+        .sort(([nameA], [nameB]) => nameA.localeCompare(nameB));
+
+      const total = entries.reduce(
+        (sum, [, count]) => sum + count,
+        0
+      );
+
+      totalCount.textContent = total;
+
+      if (entries.length === 0) {
+        classCounts.innerHTML =
+          '<div class="empty-count">No objects detected</div>';
+        return;
+      }
+
+      classCounts.innerHTML = "";
+
+      for (const [label, count] of entries) {
+        const row = document.createElement("div");
+        row.className = "class-row";
+
+        const name = document.createElement("span");
+        name.textContent = label;
+
+        const value = document.createElement("span");
+        value.className = "count";
+        value.textContent = count;
+
+        row.append(name, value);
+        classCounts.appendChild(row);
+      }
+    }
+
+    function base64ToBlob(base64Text, mimeType) {
+      const binary = atob(base64Text);
+      const bytes = new Uint8Array(binary.length);
+
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      return new Blob([bytes], { type: mimeType });
+    }
+
+    async function start() {
+      try {
+        resetCounter();
+        setStatus("Requesting camera permission...");
+
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: "environment"
+          },
+          audio: false
+        });
+
+        camera.srcObject = stream;
+        await camera.play();
+
+        setStatus("Connecting to detection server...");
+
+        socket = new WebSocket(getWebSocketUrl());
+
+        socket.onopen = () => {
+          running = true;
+          startButton.disabled = true;
+          stopButton.disabled = false;
+          setStatus("Connected. Detecting objects...");
+          sendNextFrame();
+        };
+
+        socket.onmessage = (event) => {
+          frameInFlight = false;
+
+          try {
+            // FastAPI send_json() sends a text message by default.
+            const response = JSON.parse(event.data);
+
+            if (response.error) {
+              setStatus(`Server error: ${response.error}`);
+              return;
+            }
+
+            if (resultUrl) {
+              URL.revokeObjectURL(resultUrl);
+            }
+
+            const imageBlob = base64ToBlob(
+              response.image,
+              "image/jpeg"
+            );
+
+            resultUrl = URL.createObjectURL(imageBlob);
+            resultImage.src = resultUrl;
+            viewer.classList.add("has-image");
+
+            renderCounts(response.counts || {});
+
+            if (running) {
+              sendNextFrame();
+            }
+          } catch (error) {
+            console.error("Cannot process server response:", error);
+            setStatus(`Cannot process detection result: ${error.message}`);
+          }
+        };
+
+        socket.onerror = () => {
+          setStatus("WebSocket error. See the server terminal and browser console.");
+        };
+
+        socket.onclose = () => {
+          frameInFlight = false;
+
+          if (running) {
+            running = false;
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            setStatus("Server connection closed.");
+          }
+        };
+      } catch (error) {
+        console.error(error);
+        setStatus(`Cannot access camera: ${error.message}`);
+        stop();
+      }
+    }
+
+    function sendNextFrame() {
+      if (
+        !running ||
+        frameInFlight ||
+        !socket ||
+        socket.readyState !== WebSocket.OPEN ||
+        camera.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        return;
+      }
+
+      const width = 640;
+      const height = 480;
+
+      canvas.width = width;
+      canvas.height = height;
+
+      const context = canvas.getContext("2d", {
+        alpha: false,
+        desynchronized: true
+      });
+
+      context.drawImage(camera, 0, 0, width, height);
+
+      frameInFlight = true;
+
+      canvas.toBlob(
+        (blob) => {
+          if (!blob || !socket || socket.readyState !== WebSocket.OPEN) {
+            frameInFlight = false;
+            return;
+          }
+
+          socket.send(blob);
+        },
+        "image/jpeg",
+        0.78
+      );
+    }
+
+    function stop() {
+      running = false;
+      frameInFlight = false;
+
+      if (socket) {
+        socket.close();
+        socket = null;
+      }
+
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        stream = null;
+      }
+
+      camera.srcObject = null;
+
+      if (resultUrl) {
+        URL.revokeObjectURL(resultUrl);
+        resultUrl = null;
+      }
+
+      resultImage.removeAttribute("src");
+      viewer.classList.remove("has-image");
+
+      startButton.disabled = false;
+      stopButton.disabled = true;
+
+      resetCounter();
+      setStatus("Stopped.");
+    }
+
+    startButton.addEventListener("click", start);
+    stopButton.addEventListener("click", stop);
+    window.addEventListener("beforeunload", stop);
+  </script>
+</body>
+</html>
