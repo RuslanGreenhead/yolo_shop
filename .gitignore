@@ -2,6 +2,8 @@
 .*/
 # Игнорировать все файлы с расширением .pt (модели PyTorch)
 *.pt
+*.pt.tmp
+weights/
 __pycache__/
 *.py[cod]
 .DS_Store

@@ -11,6 +11,7 @@ const classCounts = document.getElementById("classCounts");
 const packedTotal = document.getElementById("packedTotal");
 const packedCounts = document.getElementById("packedCounts");
 const lastEvent = document.getElementById("lastEvent");
+const modelInfo = document.getElementById("modelInfo");
 
 let socket = null;
 let stream = null;
@@ -52,6 +53,7 @@ function renderSession(response) {
   // A frame sent before reset may arrive after the reset HTTP response.
   if (response.session_version < sessionVersion) return false;
   sessionVersion = response.session_version;
+  if (response.model_label) modelInfo.textContent = response.model_label;
   renderCounts(response.packed_counts || {}, packedTotal, packedCounts, "Nothing packed yet");
   const event = response.last_event;
   lastEvent.textContent = event

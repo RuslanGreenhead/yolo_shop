@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import logging
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,25 +9,88 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import MODEL_HF_REPO, MODEL_HF_REVISION, MODEL_PATH
+from config import (
+    MODEL_HF_FILENAME, MODEL_HF_REPO, MODEL_HF_REVISION, MODEL_PATH,
+    MODEL_PLATFORM_FILENAME, MODEL_PLATFORM_REF, MODEL_SHA256, MODEL_PROFILE,
+)
 from vision import FrameProcessor
 
 logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+def download_platform_checkpoint(model_root: Path) -> Path:
+    """Fetch public weights; keep temporary signed URLs out of configuration."""
+    import requests
+    from ultralytics_platform import Platform
+
+    cached_path = model_root / ".cache" / "platform-weights" / f"{MODEL_SHA256}.pt"
+    if cached_path.is_file():
+        return cached_path
+    with Platform(api_key="", timeout=30, max_retries=1) as platform:
+        files = platform.models.files(*MODEL_PLATFORM_REF)["files"]
+    entry = next((file for file in files if file["name"] == MODEL_PLATFORM_FILENAME), None)
+    if entry is None:
+        raise FileNotFoundError(f"Platform model has no {MODEL_PLATFORM_FILENAME} checkpoint.")
+    cached_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = cached_path.with_suffix(".download")
+    try:
+        with requests.get(entry["downloadUrl"], stream=True, timeout=(15, 60)) as response:
+            response.raise_for_status()
+            with partial.open("wb") as output:
+                for chunk in response.iter_content(1024 * 1024):
+                    output.write(chunk)
+        if partial.stat().st_size != entry["size"]:
+            raise ValueError("Downloaded model size does not match the Platform metadata.")
+        partial.replace(cached_path)
+    finally:
+        partial.unlink(missing_ok=True)
+    return cached_path
+
+
 def load_model():
+    if MODEL_PROFILE == "ppyoloe_objects365":
+        from ppyoloe_model import load_ppyoloe
+
+        return load_ppyoloe(Path(__file__).resolve().parent)
+
+    if MODEL_PROFILE in {"yoloe26n", "yoloe26x"}:
+        from yoloe_model import load_yoloe
+
+        return load_yoloe(Path(__file__).resolve().parent)
+
     from ultralytics import YOLO
 
-    # Reuse project-local weights offline; download the pinned HF file on first run.
-    model_path = Path(__file__).resolve().parent / MODEL_PATH
+    # Reuse project-local weights offline; download missing weights from their source.
+    model_root = Path(__file__).resolve().parent
+    model_path = model_root / MODEL_PATH
+    checkpoint_path = model_path
     if not model_path.is_file():
-        from huggingface_hub import hf_hub_download
+        if Path(MODEL_PATH).is_absolute():
+            raise FileNotFoundError(f"Local model checkpoint does not exist: {MODEL_PATH}")
+        if MODEL_PLATFORM_REF:
+            checkpoint_path = download_platform_checkpoint(model_root)
+        else:
+            from huggingface_hub import hf_hub_download
 
-        model_path = hf_hub_download(
-            repo_id=MODEL_HF_REPO, filename=model_path.name,
-            revision=MODEL_HF_REVISION, local_dir=model_path.parent, token=False,
-        )
+            checkpoint_path = Path(hf_hub_download(
+                repo_id=MODEL_HF_REPO, filename=MODEL_HF_FILENAME,
+                revision=MODEL_HF_REVISION, cache_dir=model_root / ".cache" / "huggingface", token=False,
+            ))
+    if MODEL_SHA256:
+        with checkpoint_path.open("rb") as checkpoint:
+            digest = hashlib.file_digest(checkpoint, "sha256").hexdigest()
+        if digest != MODEL_SHA256:
+            raise ValueError("Model checkpoint checksum mismatch; restore the pinned weights.")
+    if checkpoint_path != model_path:
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        staged_path = model_path.with_suffix(".pt.tmp")
+        try:
+            shutil.copyfile(checkpoint_path, staged_path)
+            staged_path.replace(model_path)
+        finally:
+            staged_path.unlink(missing_ok=True)
+    logger.info("Loading model %s", model_path.name)
     return YOLO(str(model_path))
 
 
@@ -34,7 +99,12 @@ async def lifespan(app: FastAPI):
     # Loading at startup keeps imports and API tests independent of model files.
     app.state.processor = await asyncio.to_thread(lambda: FrameProcessor(load_model()))
     app.state.active_camera = None
-    yield
+    try:
+        yield
+    finally:
+        close = getattr(app.state.processor.model, "close", None)
+        if callable(close):
+            await asyncio.to_thread(close)
 
 
 app = FastAPI(title="LightStore", lifespan=lifespan)

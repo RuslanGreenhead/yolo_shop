@@ -8,7 +8,7 @@ from typing import Iterable
 
 from config import (
     BAG_OVERLAP_THRESHOLD, BAG_ROI, FOOD_CLASSES,
-    MIN_INSIDE_FRAMES, TRACK_TTL_FRAMES,
+    MIN_INSIDE_FRAMES, MIN_OUTSIDE_FRAMES, TRACK_TTL_FRAMES,
 )
 
 BBox = tuple[float, float, float, float]
@@ -66,6 +66,7 @@ class TrackState:
     last_seen_frame: int
     seen_outside: bool = False
     inside_frames: int = 0
+    outside_frames: int = 0
 
 
 class PackingTracker:
@@ -74,16 +75,18 @@ class PackingTracker:
         overlap_threshold: float = BAG_OVERLAP_THRESHOLD,
         min_inside_frames: int = MIN_INSIDE_FRAMES,
         track_ttl_frames: int = TRACK_TTL_FRAMES,
+        min_outside_frames: int = MIN_OUTSIDE_FRAMES,
     ):
         if not all(isfinite(v) for v in roi) or bbox_area(roi) <= 0:
             raise ValueError("ROI must be a finite rectangle with positive area.")
         if not 0 < overlap_threshold <= 1:
             raise ValueError("Overlap threshold must be in (0, 1].")
-        if min_inside_frames < 1 or track_ttl_frames < 1:
+        if min_inside_frames < 1 or min_outside_frames < 1 or track_ttl_frames < 1:
             raise ValueError("Frame thresholds must be positive.")
         self.roi = roi
         self.overlap_threshold = overlap_threshold
         self.min_inside_frames = min_inside_frames
+        self.min_outside_frames = min_outside_frames
         self.track_ttl_frames = track_ttl_frames
         self.reset()
 
@@ -126,13 +129,18 @@ class PackingTracker:
                 )
                 self.tracks[detection.track_id] = state
 
-            # A detection gap breaks the consecutive-inside confirmation run.
+            # Gaps and boundary jitter cannot count as stable transfer evidence.
             if self.frame_number - state.last_seen_frame > 1:
                 state.inside_frames = 0
+                state.outside_frames = 0
             if not inside:
-                state.seen_outside = True
+                state.outside_frames += 1
+                if state.outside_frames >= self.min_outside_frames:
+                    state.seen_outside = True
                 state.inside_frames = 0
-            elif state.seen_outside and not state.packed:
+            else:
+                state.outside_frames = 0
+            if inside and state.seen_outside and not state.packed:
                 state.inside_frames += 1
                 if state.inside_frames >= self.min_inside_frames:
                     state.packed = True
@@ -155,6 +163,7 @@ class PackingTracker:
         for track_id, state in self.tracks.items():
             if track_id not in seen_ids:
                 state.inside_frames = 0
+                state.outside_frames = 0
         return events
 
     def snapshot(self) -> dict:

@@ -47,6 +47,8 @@ torchvision==0.29.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 ultralytics==8.4.150
+# Text tokenizer for YOLOE prompt preparation (only needed on first launch).
+clip @ git+https://github.com/ultralytics/CLIP.git@a13192f8cb767260d7dfd98c843b0716593169e7
 # ByteTrack assignment solver: install up front instead of during inference.
 lap>=0.5.12,<0.6
 ultralytics-platform==0.1.40

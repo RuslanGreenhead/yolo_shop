@@ -1,34 +1,48 @@
 # LightStore
 
 An overhead-camera packing MVP built on the original FastAPI + browser WebSocket
-prototype. YOLOv8n pretrained on Open Images V7 detects 65 selected food and
-packaging classes, ByteTrack gives each visible product a persistent ID, and a
+prototype. PP-YOLOE+ Small Objects365 detects 78 selected grocery classes on CPU,
+ByteTrack gives each visible product a persistent ID, and a
 small state machine counts transfers into a fixed bag zone. Annotated
 JPEG frames and counters are returned over the existing `/ws/detect` connection.
 
 ## Setup and launch
 
-Use Python 3.12 or newer (verified locally with Python 3.14 on macOS).
+The web app uses Python 3.12 or newer (verified locally with Python 3.14 on macOS).
+The default detector runs in a separate Python 3.11 environment with Paddle 3.3.1.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-uvicorn app:app --reload --host 127.0.0.1 --port 8000
+
+# Prepare the separate CPU detector environment once.
+python3.11 -m venv .venv-ppyolo-export
+.venv-ppyolo-export/bin/python -m pip install -r requirements-paddle.txt
+python prepare_ppyoloe.py
+
+uvicorn app:app --host 127.0.0.1 --port 8001
 ```
 
 On Windows, use WSL and the same commands above: the original frozen requirements
 include `uvloop`, which is Unix-only.
-The first launch uses `huggingface_hub` to download `yolov8n-oiv7.pt` (~7.2 MB)
-from the community HF repository
-[Blue2020Panda/YOLOv8nOIV7](https://huggingface.co/Blue2020Panda/YOLOv8nOIV7), pinned
-to revision `6085b73632b3e7e56ab64d60b1623d38679bf120`. The checkpoint is saved
-beside `app.py` and reused offline on subsequent starts. Internet access is needed
-for installation and the initial download; no HF token or dataset download is
-required. Model weights and download metadata are ignored by Git. ByteTrack's
-`lap` dependency is installed explicitly with the other requirements.
+The default `ppyoloe_objects365` profile loads Baidu's official Objects365 weights
+from `weights/ppyoloe-objects365/ppyoloe_crn_s_obj365_pretrained.pdparams` (~39 MB).
+`prepare_ppyoloe.py` downloads the pinned PaddleDetection revision, weights and label
+file. Startup verifies their hashes, class order and all 423 checkpoint parameters.
+The source revision and checksums are recorded in `ppyoloe_assets.py`.
 
-Open <http://127.0.0.1:8000>, allow camera access, and click **Start camera**.
+Paddle 3.3.1 processes frames directly on CPU. **No ONNX export is used.**
+The `.venv-ppyolo-export` directory keeps its name from the earlier export attempt;
+it now runs the detector. Set `LIGHTSTORE_PADDLE_PYTHON` to use another prepared
+Python executable. The worker communicates through a private local socket pair;
+it does not open a network port. The main app handles NMS, ByteTrack and packing
+counts. Closing the server also closes its worker. A failed worker produces an
+error, with details in `.cache/ppyoloe-worker.log`, rather than silently switching
+models. Weights, downloaded source and environments are ignored by Git. Normal
+startup and inference reuse local assets without network access.
+
+Open <http://127.0.0.1:8001>, allow camera access, and click **Start camera**.
 Browsers require localhost or HTTPS for camera capture. Point the camera down at
 the packing table and align the physical bag opening with the yellow rectangle.
 Start with products **outside** the rectangle, move one inside, and wait for the
@@ -44,6 +58,104 @@ green `PACKED` label before hiding it inside an opaque bag.
 - A server restart or development reload clears the in-memory session. Use Reset
   before changing the camera/table or starting a new packing demonstration.
 
+The current model is shown under the page heading. The default profile retains
+78 grocery labels from the checkpoint's 365-class vocabulary. These
+are category labels, not store SKU identities: `Bottle` does not identify water,
+and `Egg` does not guarantee recognition of a closed egg carton. Inference
+explicitly uses `device="cpu"`, even when a GPU is available. Validate recognition
+on the actual camera and products before relying on packing counts.
+
+The previous models remain available. Stop the server, then choose a profile:
+
+```bash
+LIGHTSTORE_MODEL=grocery_checkout uvicorn app:app --host 127.0.0.1 --port 8001
+# Or:
+LIGHTSTORE_MODEL=sku110k uvicorn app:app --host 127.0.0.1 --port 8001
+# Or:
+LIGHTSTORE_MODEL=openimages uvicorn app:app --host 127.0.0.1 --port 8001
+```
+
+The `rpc_yolo26s` profile uses `weights/rpc-yolo26s/exp-2.pt` (~20.6 MB), downloaded
+from [Xiang Zhang's RPC model](https://platform.ultralytics.com/xiang-zhang-2/test/exp-2)
+through the public Ultralytics Platform API and verified with a pinned SHA-256.
+Its 200 classes are specific RPC product identities; ten food SKUs are enabled.
+
+The `grocery_checkout` profile uses `weights/grocery-checkout/best.pt` (~5.5 MB)
+from [cvtechniques/GroceryCheckoutDetection](https://huggingface.co/cvtechniques/GroceryCheckoutDetection),
+pinned to `420cfb36aba255780835be225e920c8491c319a1` with a SHA-256 check. It is a
+YOLO11n trained on RPC-derived data with labels collapsed into 17 categories.
+Hugging Face profiles use the project-local `.cache/huggingface` download cache.
+
+The `sku110k` profile reuses `weights/sku110k-yolo11-s640.pt` (~57 MB), or downloads
+it from [chistopat/sku110k-yolo11-object-detector](https://huggingface.co/chistopat/sku110k-yolo11-object-detector),
+pinned to `ee1b8ac34eb3b68969ffa8165e50c43457fe4e35` with a SHA-256 check. It detects
+one generic `object` class and does not identify product categories or SKUs.
+
+The `openimages` profile reuses `yolov8n-oiv7.pt` (~7.2 MB), or downloads it from
+[Blue2020Panda/YOLOv8nOIV7](https://huggingface.co/Blue2020Panda/YOLOv8nOIV7),
+pinned to revision `6085b73632b3e7e56ab64d60b1623d38679bf120`.
+Use `LIGHTSTORE_MODEL=rpc_yolo26s` for the previous RPC model.
+Use `LIGHTSTORE_MODEL=yoloe26x` for the previous large YOLOE model (~172 MB).
+Use `LIGHTSTORE_MODEL=yoloe26n` for the previous eight-prompt nano model.
+Use `LIGHTSTORE_MODEL=openimages` for the previous 65-category Open Images profile.
+Use `LIGHTSTORE_MODEL=ppyoloe_objects365`, or omit the variable, for the current default.
+Switching profiles requires a restart and starts a new packing session.
+
+## CPU and Raspberry Pi 3
+
+The detector input defaults to 640 pixels; display and bag-zone coordinates stay
+at 640 × 480. `LIGHTSTORE_IMGSZ=320` tries a smaller detector input, which may miss
+small or partially hidden products. It is not enabled by default.
+
+On this M3 Pro Mac, PP-YOLOE measured 115.7 ms median per processed frame
+(about 8.6 processing FPS), using three warmup frames and 12 timed repetitions of
+a 640 × 480 JPEG of the packing illustration. This includes decoding, worker
+communication, CPU inference, NMS, tracking, drawing and JPEG encoding; it excludes
+browser capture and transport. The initial benchmark used the old 0.60 new-track
+threshold. The PP-YOLOE profile now uses 0.50. Through the full WebSocket pipeline,
+a real photo produced `Canned` and `Bottle` tracks, while the JPEG illustration
+still produced no confirmed tracks. These are
+smoke checks, not a measured camera accuracy score or proof of reliable SKU matching.
+
+The current detector uses Paddle on the Mac, with PyTorch used by the tracker
+adapter. Raspberry Pi 3 performance and memory usage have not been tested; this
+Mac environment is not a verified Pi deployment recipe. Low frame rates can miss
+the outside/inside observations required by the counter.
+
+The later 30-second WebSocket benchmark measured about 8.0 FPS and 1.45 GiB of
+combined process RSS on the M3 Pro. See the [resource report](reports/ppyoloe-resources.md)
+for the measurement conditions and limitations. To measure your own local images
+after setup, run the following on macOS (port 8002 must be free):
+
+```bash
+python benchmarks/measure_ppyoloe_resources.py --image /path/to/groceries.jpg --seconds 30 --output /tmp/lightstore-resources.json
+```
+
+Repeat `--image` to alternate between several images. This starts and stops a
+separate server, leaving the camera session on port 8001 running. Test images are
+not included in the repository; the benchmark measures resource use, not accuracy.
+
+## Previous YOLOE profiles
+
+The first launch downloads the official [YOLOE-26n weights](https://docs.ultralytics.com/models/yoloe/)
+(`yoloe-26n-seg.pt`, ~11.7 MB) and MobileCLIP2 text encoder (~254 MB) from the
+Ultralytics assets v8.4.0 release. Both are checked against the SHA-256 digests
+published in the release metadata before loading. Files are saved under
+`weights/yoloe-26n/`; the shared text encoder reuses `weights/yoloe-26x/mobileclip2_b.ts`.
+The nano profile loads the pretrained weights into the matching detection-only
+architecture, removing the unused segmentation mask branch. The CLIP tokenizer
+dependency is pinned in `requirements.txt`.
+The eight class prompts are encoded once, then cached under `.cache/yoloe-prompts/`.
+The cache is bound to the exact weights, encoder, task, Ultralytics version and ordered
+class list. Later starts reuse it without loading the text encoder or accessing
+the network. Changing the classes rebuilds the prompt cache.
+Internet access is needed for installation and the initial download; no account
+token or dataset download is required. Weights and caches are ignored by Git. ByteTrack's
+`lap` dependency is installed explicitly with the other requirements.
+
+Select `LIGHTSTORE_MODEL=yoloe26n` or `LIGHTSTORE_MODEL=yoloe26x` explicitly to use
+these profiles. Their text prompts are not used by the current Objects365 model.
+
 ## Configuration
 
 All tuning lives in `config.py`:
@@ -51,18 +163,24 @@ All tuning lives in `config.py`:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `FRAME_WIDTH`, `FRAME_HEIGHT` | `640`, `480` | Size after every incoming frame is resized |
+| `INFERENCE_DEVICE` | `cpu` | Explicit inference device; no automatic GPU selection |
+| `INFERENCE_SIZE` | `640` | Detector input size from `LIGHTSTORE_IMGSZ`; multiple of 32, at least 128; does not change ROI coordinates |
 | `BAG_ROI` | `(220, 140, 420, 380)` | Rectangle `(x1, y1, x2, y2)` in processed-image pixels |
 | `BAG_OVERLAP_THRESHOLD` | `0.30` | Minimum fraction of the **object's** box inside the ROI |
-| `MIN_INSIDE_FRAMES` | `2` | Consecutive observed inside frames needed to confirm packing |
+| `MIN_OUTSIDE_FRAMES` | `3` | Consecutive observed outside frames needed to arm a transfer |
+| `MIN_INSIDE_FRAMES` | `3` | Consecutive observed inside frames needed to confirm packing |
 | `TRACK_TTL_FRAMES` | `60` | Remove geometry after more than this many unseen processed frames |
-| `CONF_THRESHOLD` | `0.35` | YOLO detection confidence |
+| `CONF_THRESHOLD` | `0.10` | Lowest detection confidence passed to ByteTrack; new tracks require `0.50` for PP-YOLOE, `0.60` for other profiles |
 | `AGNOSTIC_NMS` | `True` | Suppress overlapping detections across different classes |
-| `NMS_IOU_THRESHOLD` | `0.70` | Box IoU above which the lower-confidence detection is suppressed |
+| `NMS_IOU_THRESHOLD` | `0.45` | Box IoU above which the lower-confidence detection is suppressed, across labels |
 | `PACKED_BANNER_FRAMES` | `30` | How long the latest event stays on the video |
 | `MAX_PACKED_OVERLAY_ROWS` | `8` | Maximum class rows on the video; the sidebar keeps all counts |
-| `MODEL_PATH` | `yolov8n-oiv7.pt` | Open Images V7 checkpoint, relative to `app.py` or absolute |
-| `MODEL_HF_REPO`, `MODEL_HF_REVISION` | See `config.py` | Pinned source used when the local checkpoint is absent |
-| `TRACKER_CONFIG` | `bytetrack.yaml` | Ultralytics ByteTrack configuration |
+| `MODEL_PROFILE` | `ppyoloe_objects365` | Selected by `LIGHTSTORE_MODEL`; also accepts `yoloe26n`, `yoloe26x`, `rpc_yolo26s`, `grocery_checkout`, `sku110k` and `openimages` |
+| `MODEL_PATH` | `weights/ppyoloe-objects365/ppyoloe_crn_s_obj365_pretrained.pdparams` | Local checkpoint, relative to `app.py` or absolute |
+| `MODEL_PLATFORM_REF`, `MODEL_PLATFORM_FILENAME` | See `config.py` | Public Platform model and named checkpoint to download |
+| `MODEL_HF_FILENAME`, `MODEL_HF_REPO`, `MODEL_HF_REVISION` | See `config.py` | Source for Hugging Face profiles when their local checkpoint is absent |
+| `MODEL_SHA256` | See `config.py` | Required checksum for YOLOE, RPC, GroceryCheckoutDetection and SKU-110K weights |
+| `TRACKER_CONFIG` | `bytetrack-ppyoloe.yaml` | Local ByteTrack configuration, resolved relative to `config.py` |
 
 Coordinates start at the top-left corner: x increases to the right, y downward.
 For the default ROI, the bag zone is 200 pixels wide and 240 pixels tall. Keep
@@ -70,8 +188,54 @@ For the default ROI, the bag zone is 200 pixels wide and 240 pixels tall. Keep
 apply after resizing, independently of camera capture resolution. Adjust the
 rectangle to match the real bag opening. Changing settings requires a reload.
 
-`FOOD_CLASSES` is built from `FOOD_CLASS_GROUPS` and includes **all 65 requested
-classes**, including packaging. Names are case-sensitive and match the checkpoint:
+`FOOD_CLASSES` is built from the selected profile's `FOOD_CLASS_GROUPS`. Names are
+case-sensitive and class IDs are resolved from the checkpoint. Startup rejects
+weights missing any enabled class.
+
+The default PP-YOLOE profile enables **78 categories**: 76 food categories plus
+`Bottle` and `Storage box`. The exact groups and full ordered 365-class vocabulary
+are in [objects365_classes.json](objects365_classes.json). Examples include
+`Apple`, `Banana`, `Canned`, `Chips`, `Cookies`, `Cheese`, `Sausage` and `Egg`.
+The detector keeps its original 365-class head. For each candidate box we first
+select the best class across all 365, then apply the grocery allowlist, so excluded
+objects are not forced into a food category. Changing the allowlist does not retrain
+the model or guarantee a speedup. A class such as `Chips` does not guarantee that a
+closed packet or a specific brand will be recognized.
+
+The previous `yoloe26n` and `yoloe26x` profiles use these **eight classes**, in class-ID order:
+
+`food can`, `apple`, `water bottle`, `banana`, `bag of potato chips`,
+`packaged cheese`, `packaged sausage`, `egg carton`.
+
+Edit `YOLOE_CLASSES` in `config.py` to change the prompts, then restart. YOLOE
+sets its classification head to this vocabulary before tracking starts; the same
+allowlist also filters detections, annotations and packing counts. The published
+segmentation checkpoint supplies pretrained detection weights. The nano profile
+removes the mask branch; the large profile retains it, but packing does not use masks.
+
+The `rpc_yolo26s` profile enables these **10 food SKU labels**:
+
+| Group | Enabled RPC labels |
+| --- | --- |
+| Snacks and sweets | `1_puffed_food`, `13_dried_fruit`, `122_chocolate`, `142_candy` |
+| Packaged food | `26_dried_food`, `64_dessert`, `109_canned_food` |
+| Drinks and milk | `32_instant_drink`, `71_drink`, `97_milk` |
+
+Other SKUs, including tissue, stationery and personal hygiene products, are
+excluded from detections and packing counts. Edit the RPC `FOOD_CLASS_GROUPS` in
+`config.py` and restart to change this selection. The complete 200-label catalog
+remains in [rpc_classes.json](rpc_classes.json), checked against both the
+checkpoint and the public model metadata. The weights still have 200 classes;
+the inference allowlist filters outputs without retraining or guaranteeing a
+significant speedup. Enabling `97_milk` does not enable the other milk SKUs.
+
+The `grocery_checkout` profile enables all 17 checkpoint labels:
+`alcohol`, `candy`, `canned_food`, `chocolate`, `dessert`, `dried_food`, `dried_fruit`,
+`drink`, `gum`, `instant_drink`, `instant_noodles`, `milk`, `personal_hygiene`,
+`puffed_food`, `seasoner`, `stationery`, `tissue`.
+The `sku110k` profile enables only `object`.
+
+The `openimages` profile enables these **65 categories**, including packaging:
 
 | Group | Enabled Open Images V7 labels |
 | --- | --- |
@@ -83,17 +247,31 @@ classes**, including packaging. Names are case-sensitive and match the checkpoin
 | Sweets and drinks (6) | Candy, Ice cream, Popcorn, Juice, Tea, Coffee |
 | Packaging (5) | Bottle, Box, Tin can, Plastic bag, Container |
 
-Edit the groups to change the allowed classes. Class IDs are resolved from the
-model's names rather than hardcoded dataset IDs. Startup rejects a checkpoint
-missing any enabled class, so an accidental switch back to COCO cannot silently
-disable products. See the [full upstream class list](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/open-images-v7.yaml).
+Edit `OPEN_IMAGES_CLASS_GROUPS` to change that profile's allowed classes. See the
+[full upstream class list](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/open-images-v7.yaml).
 
 Filtering happens both at inference and before tracking-state updates/drawing;
-people, furniture, phones and all other unselected classes are ignored. Detection
+unselected class labels are ignored. In the Open Images profile this excludes
+people, furniture and phones. The SKU-110K model has no such labels and can still
+produce false product detections on non-product objects. Detection
 boxes without a track ID are withheld until ByteTrack confirms them.
+Inference explicitly sets `nms=True`. On YOLO26 this selects the one-to-many head
+so the configured class-agnostic IoU suppression runs before ByteTrack, as it does
+with YOLO11. It is not the default NMS-free inference mode; platform-reported
+metrics should not be treated as measured accuracy for this application mode.
+The ByteTrack profiles separate finding a new product from keeping an existing
+one: a new track requires confidence `0.50` in `bytetrack-ppyoloe.yaml` and `0.60`
+in `bytetrack-lightstore.yaml`; existing tracks can match boxes from
+`0.35` and use a second pass on scores between `0.10` and `0.35`. Lost tracks are
+retained for 60 processed frames to recover brief occlusions. Association uses
+geometry without score fusion, so confidence changes do not directly inflate the
+matching cost. Raising `CONF_THRESHOLD` would remove recovery candidates before
+ByteTrack sees them. The stricter new-track threshold reduces weak false positives
+but may miss unfamiliar products. Stronger NMS may suppress heavily overlapping
+real products, so keep items separated where possible.
 `visible_counts` counts displayed tracked objects, including packaging. A track
 keeps its first observed enabled class to reduce label flicker. Labels retain
-their Open Images capitalization in the video and JSON responses.
+their checkpoint spelling in the video and JSON responses.
 
 Open Images includes overlapping meanings such as `Milk`, `Dairy Product` and
 `Bottle`. Class-agnostic NMS suppresses highly overlapping boxes before ByteTrack,
@@ -103,7 +281,7 @@ package enclosing a smaller visible product can still receive a separate ID.
 Packaging follows exactly the same outside → inside packing rule as food.
 
 For a custom checkpoint, place it locally and update `MODEL_PATH` and the class
-groups together; update the HF source as well if it should be downloaded remotely.
+groups together; update the checksum and HF source to match the new weights.
 
 ## Packing state machine
 
@@ -113,7 +291,9 @@ Zero-area, inverted or non-finite boxes are ignored.
 
 1. **Unarmed:** a new track seen inside has no evidence of transfer. It is not
    counted, however long it stays inside.
-2. **Outside / armed:** once the track is observed outside, it can start a transfer.
+2. **Outside / armed:** after `MIN_OUTSIDE_FRAMES` consecutive outside observations,
+   the track can start a transfer. A gap or an inside observation resets an
+   unfinished outside streak; a one-frame boundary jump cannot arm a new ID.
 3. **Entering:** each consecutive observed inside frame advances confirmation.
    Returning outside or missing a frame clears this streak. A missing frame does
    not erase the previously observed outside position unless the track expires.
@@ -130,7 +310,7 @@ Frame counts refer to processed frames, not elapsed seconds.
 ## API
 
 - `GET /` — existing browser camera frontend.
-- `GET /api/session` — packed counts, total, event count, latest event and session version.
+- `GET /api/session` — packed counts, total, event count, latest event, session version, model profile/label and enabled classes.
 - `POST /api/reset` — reset and return the cleared session.
 - `WS /ws/detect` — send binary camera JPEGs, receive JSON with annotated JPEGs.
 
@@ -139,15 +319,18 @@ Example WebSocket response (image omitted):
 ```json
 {
   "image": "<base64 JPEG>",
-  "visible_counts": {"Apple": 1},
-  "counts": {"Apple": 1},
-  "packed_counts": {"Apple": 2, "Banana": 1},
+  "visible_counts": {"apple": 1},
+  "counts": {"apple": 1},
+  "packed_counts": {"apple": 2, "water bottle": 1},
   "packed_total": 3,
   "event_count": 3,
   "session_version": 0,
+  "model_profile": "yoloe26x",
+  "model_label": "YOLOE-26x · 8 food and packaging classes",
+  "enabled_classes": ["food can", "apple", "water bottle", "banana", "bag of potato chips", "packaged cheese", "packaged sausage", "egg carton"],
   "last_event": {
     "track_id": 7,
-    "class_name": "Apple",
+    "class_name": "apple",
     "event": "packed",
     "timestamp": "2026-09-14T19:00:00+00:00",
     "frame_number": 42
@@ -177,6 +360,9 @@ model and real JPEG encoding/decoding; they do not download or load weights.
 
 ```bash
 python -m unittest discover -s tests -v
+LIGHTSTORE_MODEL=grocery_checkout python -m unittest discover -s tests -v
+LIGHTSTORE_MODEL=sku110k python -m unittest discover -s tests -v
+LIGHTSTORE_MODEL=openimages python -m unittest discover -s tests -v
 python -m compileall -q app.py config.py tracking.py vision.py tests
 ```
 
@@ -188,20 +374,22 @@ node --test tests/frontend.test.cjs
 node --check static/app.js
 ```
 
-For a real-camera acceptance check, move one apple outside → inside, hold it for
+For a real-camera acceptance check, move one product outside → inside, hold it for
 several frames, and verify one event. Move it out and back with the same displayed
-ID and verify no duplicate. Repeat with two products, a bottle or box, an excluded
-object such as a phone, and Reset. Automated geometry tests cannot establish real-world detection
+ID and verify no duplicate. Repeat with two products, a bottle or box, non-product
+objects to check false detections, and Reset. Automated geometry tests cannot establish real-world detection
 or tracking accuracy.
 
 ## Files
 
-- `app.py`: HF checkpoint loading, FastAPI lifecycle, WebSocket and session/reset endpoints.
-- `config.py`: grouped product/packaging labels, checkpoint source, ROI and thresholds.
+- `app.py`: Platform/HF checkpoint loading, FastAPI lifecycle, WebSocket and session/reset endpoints.
+- `rpc_classes.json`: 200 SKU labels from the pinned RPC checkpoint.
+- `config.py`: model profiles, grouped labels, checkpoint source/checksum, ROI and thresholds.
 - `tracking.py`: dependency-free geometry, per-ID state, counts and event log.
 - `vision.py`: YOLO tracking adapter, class validation/filtering, NMS, annotation and session lock.
 - `static/index.html`, `static/app.js`: original camera UI, capture loop, packed
   counters and reset controls.
+- `bytetrack-lightstore.yaml`: confidence thresholds, lost-track lifetime and association settings.
 - `tests/`: geometry, event, API and browser-controller regression tests.
 
 ## MVP limitations
@@ -209,7 +397,17 @@ or tracking accuracy.
 - An ROI crossing is a proxy for packing; this does not verify that an item is
   actually inside a physical bag. Brief passes through the ROI can count once
   they meet the configured confirmation length.
-- The 65 enabled Open Images classes are generic categories, not store SKUs.
+- The default RPC model recognizes the 200 training SKU labels. Similar-looking
+  unfamiliar packaging can receive a wrong SKU label. There is no open-set
+  recognition or order integration in this MVP.
+- The optional GroceryCheckoutDetection model predicts broad categories from predominantly Chinese
+  packaged groceries. Unseen packaging, other camera angles and fresh produce
+  can cause missed or incorrect detections. The app does not match item identities
+  against an order, and these categories do not identify individual SKUs.
+- The optional SKU-110K model provides generic boxes with a single `object` label; it does
+  not recognize individual SKUs or check a bag against an order's item identities.
+  Its shelf training data differs from overhead packing footage.
+- The optional 65 Open Images classes are generic categories, not store SKUs.
   Brand, size and flavour are not distinguished. A food label does not guarantee
   recognition through a closed package; packaging labels describe its shape,
   not its contents. Lighting, occlusion,

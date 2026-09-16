@@ -10,7 +10,8 @@ import numpy as np
 from config import (
     AGNOSTIC_NMS, CONF_THRESHOLD, FOOD_CLASSES, FRAME_HEIGHT, FRAME_WIDTH,
     MAX_FRAME_BYTES, MAX_PACKED_OVERLAY_ROWS, NMS_IOU_THRESHOLD,
-    PACKED_BANNER_FRAMES, TRACKER_CONFIG,
+    MODEL_LABEL, MODEL_PROFILE, PACKED_BANNER_FRAMES, TRACKER_CONFIG,
+    INFERENCE_DEVICE, INFERENCE_SIZE,
 )
 from tracking import Detection, PackingTracker
 
@@ -90,7 +91,7 @@ class FrameProcessor:
             raise ValueError(
                 "The model is missing configured FOOD_CLASSES: "
                 + ", ".join(sorted(missing_classes))
-                + ". Use the Open Images V7 weights or update FOOD_CLASSES."
+                + ". Use the weights matching LIGHTSTORE_MODEL or update FOOD_CLASSES."
             )
         self.food_class_ids = [
             class_id for class_id, name in model.names.items() if name in FOOD_CLASSES
@@ -110,7 +111,12 @@ class FrameProcessor:
             return self._snapshot()
 
     def _snapshot(self) -> dict:
-        return {**self.tracker.snapshot(), "session_version": self.session_version}
+        return {
+            **self.tracker.snapshot(), "session_version": self.session_version,
+            "model_profile": MODEL_PROFILE, "model_label": MODEL_LABEL,
+            "inference_device": INFERENCE_DEVICE, "inference_size": INFERENCE_SIZE,
+            "enabled_classes": [self.model.names[index] for index in self.food_class_ids],
+        }
 
     def process(self, image_bytes: bytes) -> dict:
         if not image_bytes or len(image_bytes) > MAX_FRAME_BYTES:
@@ -125,8 +131,11 @@ class FrameProcessor:
             result = self.model.track(
                 frame, persist=True, tracker=TRACKER_CONFIG,
                 classes=self.food_class_ids, conf=CONF_THRESHOLD,
-                imgsz=FRAME_WIDTH, verbose=False,
+                imgsz=INFERENCE_SIZE, device=INFERENCE_DEVICE, verbose=False,
                 agnostic_nms=AGNOSTIC_NMS, iou=NMS_IOU_THRESHOLD,
+                # Select the NMS head on YOLO26 so the same duplicate-box filter
+                # used by the YOLO11 profiles remains active before ByteTrack.
+                nms=True,
             )[0]
             detections = extract_food_detections(result)
             events = self.tracker.update(detections)
