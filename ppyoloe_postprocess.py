@@ -10,14 +10,14 @@ def preprocess(frame, size):
     return np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
 
 
-def select_candidates(boxes, scores, threshold):
-    """Pick the best of all 365 labels, without relabelling excluded objects."""
+def select_candidates(boxes, scores, threshold, num_classes=365):
+    """Pick the best checkpoint label, without relabelling excluded objects."""
     boxes = np.asarray(boxes, dtype=np.float32)
     scores = np.asarray(scores, dtype=np.float32)
     if boxes.ndim != 3 or boxes.shape[0] != 1 or boxes.shape[2] != 4:
         raise ValueError("PP-YOLOE returned an invalid box tensor.")
-    if scores.shape != (1, 365, boxes.shape[1]):
-        raise ValueError("PP-YOLOE must return scores for all 365 Objects365 classes.")
+    if scores.shape != (1, num_classes, boxes.shape[1]):
+        raise ValueError(f"PP-YOLOE must return scores for all {num_classes} checkpoint classes.")
     labels = scores[0].argmax(axis=0)
     confidence = scores[0, labels, np.arange(len(labels))]
     valid = (np.isfinite(confidence) & (confidence >= threshold)

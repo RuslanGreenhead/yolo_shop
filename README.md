@@ -6,6 +6,37 @@ ByteTrack gives each visible product a persistent ID, and a
 small state machine counts transfers into a fixed bag zone. Annotated
 JPEG frames and counters are returned over the existing `/ws/detect` connection.
 
+To fine-tune these weights on annotated grocery footage, see
+[the grocery training pipeline](TRAINING.md). It accepts a YOLO detection ZIP,
+converts the labels, transfers the current Objects365 weights, trains on CPU and
+exports a checkpoint that can be selected with `LIGHTSTORE_MODEL=ppyoloe_custom`.
+Use `--init-manifest` to continue from an existing fine-tuned model when adding
+new views or classes; classifier rows are matched by name.
+
+## Published six-class model
+
+The latest fine-tuned checkpoint is available in the
+[six-class overhead release](https://github.com/RuslanGreenhead/yolo_shop/releases/tag/grocery6-overhead-2026-09-17).
+It detects `apple`, `bottle`, `can`, `chocolate bar`, `pack of crisps` and
+`pack of muffins`, using CPU inference at 416×416. The release includes the actual
+trained weights (~31 MB) and their manifest; the dataset is not required to run it.
+
+After completing the environment setup below, stop any server using port 8001,
+then run from the repository root with `.venv` active:
+
+```bash
+python prepare_grocery6.py
+LIGHTSTORE_MODEL=ppyoloe_custom \
+LIGHTSTORE_PPYOLOE_MANIFEST="$PWD/models/grocery6-overhead/best.json" \
+python -m uvicorn app:app --host 127.0.0.1 --port 8001
+```
+
+The downloader verifies the SHA-256 pinned in the committed manifest and reuses
+valid local weights offline. Training results and limitations are recorded in
+[the overhead training report](reports/grocery6-overhead.md). The validation/test
+frames share source videos with training, so these scores do not establish
+accuracy on a new camera recording.
+
 ## Setup and launch
 
 The web app uses Python 3.12 or newer (verified locally with Python 3.14 on macOS).
@@ -175,7 +206,8 @@ All tuning lives in `config.py`:
 | `NMS_IOU_THRESHOLD` | `0.45` | Box IoU above which the lower-confidence detection is suppressed, across labels |
 | `PACKED_BANNER_FRAMES` | `30` | How long the latest event stays on the video |
 | `MAX_PACKED_OVERLAY_ROWS` | `8` | Maximum class rows on the video; the sidebar keeps all counts |
-| `MODEL_PROFILE` | `ppyoloe_objects365` | Selected by `LIGHTSTORE_MODEL`; also accepts `yoloe26n`, `yoloe26x`, `rpc_yolo26s`, `grocery_checkout`, `sku110k` and `openimages` |
+| `MODEL_PROFILE` | `ppyoloe_objects365` | Selected by `LIGHTSTORE_MODEL`; also accepts `ppyoloe_custom`, `yoloe26n`, `yoloe26x`, `rpc_yolo26s`, `grocery_checkout`, `sku110k` and `openimages` |
+| `PPYOLOE_MANIFEST` | Unset | Required `LIGHTSTORE_PPYOLOE_MANIFEST` for `ppyoloe_custom`; fixes weights, ordered classes and default input size |
 | `MODEL_PATH` | `weights/ppyoloe-objects365/ppyoloe_crn_s_obj365_pretrained.pdparams` | Local checkpoint, relative to `app.py` or absolute |
 | `MODEL_PLATFORM_REF`, `MODEL_PLATFORM_FILENAME` | See `config.py` | Public Platform model and named checkpoint to download |
 | `MODEL_HF_FILENAME`, `MODEL_HF_REPO`, `MODEL_HF_REVISION` | See `config.py` | Source for Hugging Face profiles when their local checkpoint is absent |

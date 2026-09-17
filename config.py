@@ -45,6 +45,8 @@ MODEL_PROFILE = os.environ.get("LIGHTSTORE_MODEL", "ppyoloe_objects365")
 MODEL_PLATFORM_REF = None
 MODEL_PLATFORM_FILENAME = None
 MODEL_HF_REPO = MODEL_HF_FILENAME = MODEL_HF_REVISION = None
+PPYOLOE_MANIFEST = None
+DEFAULT_INFERENCE_SIZE = 640
 if MODEL_PROFILE == "ppyoloe_objects365":
     TRACKER_CONFIG = str(Path(__file__).resolve().with_name("bytetrack-ppyoloe.yaml"))
     MODEL_PATH = "weights/ppyoloe-objects365/ppyoloe_crn_s_obj365_pretrained.pdparams"
@@ -52,6 +54,19 @@ if MODEL_PROFILE == "ppyoloe_objects365":
     MODEL_LABEL = "PP-YOLOE+ Small · Objects365 · CPU · 78 grocery classes"
     catalog = json.loads(Path(__file__).with_name("objects365_classes.json").read_text())
     FOOD_CLASS_GROUPS = {name: set(labels) for name, labels in catalog["grocery_groups"].items()}
+elif MODEL_PROFILE == "ppyoloe_custom":
+    from ppyoloe_checkpoint import read_manifest
+
+    if not os.environ.get("LIGHTSTORE_PPYOLOE_MANIFEST"):
+        raise ValueError("Set LIGHTSTORE_PPYOLOE_MANIFEST to the fine-tuning run's best.json.")
+    PPYOLOE_MANIFEST = str(Path(os.environ["LIGHTSTORE_PPYOLOE_MANIFEST"]).resolve())
+    custom, checkpoint = read_manifest(PPYOLOE_MANIFEST, verify_weights=False)
+    MODEL_PATH = str(checkpoint)
+    MODEL_SHA256 = custom["checkpoint_sha256"]
+    DEFAULT_INFERENCE_SIZE = custom["input_size"]
+    TRACKER_CONFIG = str(Path(__file__).resolve().with_name("bytetrack-ppyoloe.yaml"))
+    MODEL_LABEL = f"PP-YOLOE+ Small · Fine-tuned · CPU · {len(custom['labels'])} grocery classes"
+    FOOD_CLASS_GROUPS = {"Custom grocery": set(custom["labels"])}
 elif MODEL_PROFILE in {"yoloe26n", "yoloe26x"}:
     variant = "n" if MODEL_PROFILE == "yoloe26n" else "x"
     MODEL_PATH = f"weights/yoloe-26{variant}/yoloe-26{variant}-seg.pt"
@@ -112,10 +127,10 @@ elif MODEL_PROFILE == "openimages":
     MODEL_LABEL = "YOLOv8n · Open Images V7 · CPU · 65 food and packaging classes"
     FOOD_CLASS_GROUPS = OPEN_IMAGES_CLASS_GROUPS
 else:
-    raise ValueError("LIGHTSTORE_MODEL must be 'ppyoloe_objects365', 'yoloe26n', 'yoloe26x', 'rpc_yolo26s', 'grocery_checkout', 'sku110k' or 'openimages'.")
+    raise ValueError("LIGHTSTORE_MODEL must be 'ppyoloe_objects365', 'ppyoloe_custom', 'yoloe26n', 'yoloe26x', 'rpc_yolo26s', 'grocery_checkout', 'sku110k' or 'openimages'.")
 
 # Detector resolution is independent of display/ROI coordinates (640 x 480).
-INFERENCE_SIZE = int(os.environ.get("LIGHTSTORE_IMGSZ", "640"))
+INFERENCE_SIZE = int(os.environ.get("LIGHTSTORE_IMGSZ", str(DEFAULT_INFERENCE_SIZE)))
 if INFERENCE_SIZE < 128 or INFERENCE_SIZE % 32:
     raise ValueError("LIGHTSTORE_IMGSZ must be a multiple of 32, at least 128.")
 

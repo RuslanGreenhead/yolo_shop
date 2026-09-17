@@ -49,7 +49,7 @@ def download_platform_checkpoint(model_root: Path) -> Path:
 
 
 def load_model():
-    if MODEL_PROFILE == "ppyoloe_objects365":
+    if MODEL_PROFILE in {"ppyoloe_objects365", "ppyoloe_custom"}:
         from ppyoloe_model import load_ppyoloe
 
         return load_ppyoloe(Path(__file__).resolve().parent)

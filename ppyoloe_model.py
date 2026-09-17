@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class PaddleWorker:
-    def __init__(self, root, size, confidence):
+    def __init__(self, root, size, confidence, manifest=None):
         python = Path(os.environ.get("LIGHTSTORE_PADDLE_PYTHON", root / ".venv-ppyolo-export/bin/python"))
         if not python.is_file():
             raise FileNotFoundError("Paddle worker environment is missing; see the PP-YOLOE setup in README.md.")
@@ -34,10 +34,13 @@ class PaddleWorker:
                             "OPENBLAS_NUM_THREADS": "4", "VECLIB_MAXIMUM_THREADS": "4",
                             "GLOG_minloglevel": "2", "MPLCONFIGDIR": str(root / ".cache/matplotlib")})
         try:
+            command = [str(python), str(root / "ppyoloe_worker.py"), "--fd", str(child.fileno()),
+                       "--size", str(size), "--conf", str(confidence)]
+            if manifest is not None:
+                command.extend(["--manifest", str(manifest)])
             with self.log_path.open("a") as log:
                 self.process = subprocess.Popen(
-                    [str(python), str(root / "ppyoloe_worker.py"), "--fd", str(child.fileno()),
-                     "--size", str(size), "--conf", str(confidence)],
+                    command,
                     cwd=root, env=environment, pass_fds=(child.fileno(),),
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                 )
@@ -118,16 +121,25 @@ class PPYOLOEModel:
 
 
 def load_ppyoloe(root: Path):
-    from config import FOOD_CLASSES, INFERENCE_SIZE, CONF_THRESHOLD
+    from config import FOOD_CLASSES, INFERENCE_SIZE, CONF_THRESHOLD, PPYOLOE_MANIFEST
 
-    labels = json.loads((root / "objects365_classes.json").read_text())["labels"]
-    if len(labels) != 365 or not FOOD_CLASSES.issubset(labels):
-        raise ValueError("The Objects365 catalog does not match selected grocery classes.")
-    worker = PaddleWorker(root, INFERENCE_SIZE, CONF_THRESHOLD)
+    if PPYOLOE_MANIFEST:
+        from ppyoloe_checkpoint import read_manifest
+        manifest, _ = read_manifest(PPYOLOE_MANIFEST)
+        labels, expected_sha = manifest["labels"], manifest["checkpoint_sha256"]
+        if set(FOOD_CLASSES) != set(labels):
+            raise ValueError("The custom class list does not match the checkpoint.")
+        worker = PaddleWorker(root, INFERENCE_SIZE, CONF_THRESHOLD, manifest=PPYOLOE_MANIFEST)
+    else:
+        labels = json.loads((root / "objects365_classes.json").read_text())["labels"]
+        if len(labels) != 365 or not FOOD_CLASSES.issubset(labels):
+            raise ValueError("The Objects365 catalog does not match selected grocery classes.")
+        expected_sha = CHECKPOINT_SHA256
+        worker = PaddleWorker(root, INFERENCE_SIZE, CONF_THRESHOLD)
     metadata = worker.metadata
     if (metadata.get("labels") != labels or metadata.get("device") != "cpu"
             or metadata.get("size") != INFERENCE_SIZE
-            or metadata.get("checkpoint_sha256") != CHECKPOINT_SHA256):
+            or metadata.get("checkpoint_sha256") != expected_sha):
         worker.close()
         raise ValueError("Paddle worker loaded the wrong model, class order, size or device.")
     logger.info("PP-YOLOE+ Small ready: Paddle %s, CPU, %d enabled classes",
