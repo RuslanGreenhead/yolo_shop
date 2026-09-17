@@ -21,29 +21,72 @@ It detects `apple`, `bottle`, `can`, `chocolate bar`, `pack of crisps` and
 `pack of muffins`, using CPU inference at 416×416. The release includes the actual
 trained weights (~31 MB) and their manifest; the dataset is not required to run it.
 
-After completing the environment setup below, stop any server using port 8001,
-then run from the repository root with `.venv` active:
+### Start from a clean computer
+
+Install **Git, Python 3.14 and Python 3.11** first. The setup script targets
+Apple Silicon macOS 14+ and Linux x86_64 (Windows users can use x86_64 WSL2).
+The clean-install procedure is verified on Apple Silicon; Linux/WSL still needs
+verification on that hardware. Native Windows, Intel Macs and Raspberry Pi 3
+are not supported by this pinned runtime. On Debian/Ubuntu, OpenCV may also need
+the system packages `libgl1` and `libglib2.0-0`.
 
 ```bash
-python prepare_grocery6.py
-LIGHTSTORE_MODEL=ppyoloe_custom \
-LIGHTSTORE_PPYOLOE_MANIFEST="$PWD/models/grocery6-overhead/best.json" \
-python -m uvicorn app:app --host 127.0.0.1 --port 8001
+git clone --branch codex/lightstore-packing-mvp https://github.com/RuslanGreenhead/yolo_shop.git
+cd yolo_shop
+python3.14 setup_lightstore.py
+python3 run_lightstore.py
 ```
 
-The downloader verifies the SHA-256 pinned in the committed manifest and reuses
-valid local weights offline. Training results and limitations are recorded in
+Open <http://127.0.0.1:8001/>. No environment activation, personal paths, training
+ZIPs or copied cache folders are needed. The setup creates `.venv` (Python 3.14)
+and `.venv-ppyolo-export` (Python 3.11), installs pinned dependencies, restores
+the exact PaddleDetection revision, downloads the released weights, verifies
+SHA-256 and runs three frames through the real CPU model and HTTP/WebSocket app.
+It does not download the original 365-class weights for this six-class launch.
+
+Use `--paddle-python /path/to/python3.11` if that interpreter is not on PATH.
+Add `--no-cache` to setup to bypass pip's download cache. Linux setup requests
+CPU-only PyTorch wheels. Allow roughly 3 GB of disk for the two environments,
+source and weights, plus installation temporary files.
+
+Subsequent launches use `python3 run_lightstore.py`; add `--port 8002` if 8001 is
+already occupied. Stop the server with Ctrl+C. The launcher selects the published
+six-class checkpoint, CPU and 416×416 input even if the shell previously selected
+another model. To check without starting a listening server, use
+`python3 run_lightstore.py --check`. This is an installation/inference smoke test,
+not a measurement of detection quality.
+
+### What is cached
+
+- `models/grocery6-overhead/best.pdparams`: published weights, checked by SHA-256.
+- `.cache/PaddleDetection`: upstream source at the pinned commit. Local source
+  changes are rejected; setup never silently depends on patches from this Mac.
+- `.cache/matplotlib` and `.cache/ultralytics`: disposable framework settings.
+- `.cache/datasets`: converted training data, used only during fine-tuning.
+
+Runtime assets are restored on first setup; later launches work offline when
+source and weights are present. Detection results are **not cached**. ByteTrack
+and packing counts keep session state in RAM; Reset or restart clears packing
+state. Keep your original training archives and `runs/` checkpoints if you need
+to repeat/continue training; they are separate from disposable download caches.
+
+See [the clean-install check](reports/clean-install.md) for the tested environment
+and the dependency issue found and fixed during that check.
+
+The fixed model, classes and thresholds reproduce the configuration. Frame rate
+and detections can still differ with hardware, camera, lighting and floating-point
+rounding. Training results and limitations are recorded in
 [the overhead training report](reports/grocery6-overhead.md). The validation/test
 frames share source videos with training, so these scores do not establish
 accuracy on a new camera recording.
 
-## Setup and launch
+## Manual setup and earlier models
 
-The web app uses Python 3.12 or newer (verified locally with Python 3.14 on macOS).
+The pinned web environment uses Python 3.14 on macOS.
 The default detector runs in a separate Python 3.11 environment with Paddle 3.3.1.
 
 ```bash
-python3 -m venv .venv
+python3.14 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 

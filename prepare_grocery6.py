@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from ppyoloe_checkpoint import read_manifest
+from prepare_ppyoloe import prepare_source
 from yoloe_model import download_verified
 
 RELEASE_URL = (
@@ -12,7 +13,9 @@ RELEASE_URL = (
 
 
 def main():
-    manifest_path = Path(__file__).resolve().parent / "models/grocery6-overhead/best.json"
+    root = Path(__file__).resolve().parent
+    prepare_source(root)
+    manifest_path = root / "models/grocery6-overhead/best.json"
     manifest, checkpoint = read_manifest(manifest_path, verify_weights=False)
     download_verified(f"{RELEASE_URL}/{checkpoint.name}", checkpoint,
                       manifest["checkpoint_sha256"])

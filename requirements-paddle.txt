@@ -38,6 +38,8 @@ python-dateutil==2.9.0.post0
 PyYAML==6.0.3
 requests==2.34.2
 safetensors==0.8.0
+# PaddleDetection model_zoo imports pkg_resources, removed by newer setuptools.
+setuptools==80.10.2
 scikit-image==0.26.0
 scikit-learn==1.9.1
 scipy==1.17.1

@@ -7,7 +7,7 @@ Classes absent from the new dataset are not retained. Previous weights remain in
 
 ## 1. Prepare the environments
 
-Follow [README setup](README.md#setup-and-launch) once. Training uses the existing
+Follow [README setup](README.md#start-from-a-clean-computer) once. Training uses the existing
 Python 3.11 / Paddle 3.3.1 CPU environment. No new framework or GPU is required.
 Run the following commands from the repository root with the main `.venv` active.
 
