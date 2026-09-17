@@ -1,5 +1,10 @@
 # LightStore
 
+**Docker launch (Windows, macOS, Linux):** follow [DOCKER.md](DOCKER.md), then run
+`docker compose up --build -d --wait` and open <http://localhost:8001/>. The image
+includes the six-class trained weights and their runtime; no local Python setup
+is required. Native amd64 and arm64 variants are built from the same Dockerfile.
+
 An overhead-camera packing MVP built on the original FastAPI + browser WebSocket
 prototype. PP-YOLOE+ Small Objects365 detects 78 selected grocery classes on CPU,
 ByteTrack gives each visible product a persistent ID, and a
